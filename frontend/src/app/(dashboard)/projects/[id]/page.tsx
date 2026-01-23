@@ -5,9 +5,9 @@
  */
 
 import { useState } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getProject, getScans, triggerScan, getFindings, ProjectWithStats, Scan, Finding } from '@/lib/api';
+import { getProject, getScans, triggerScan, getFindings, deleteProject, cancelScan, ProjectWithStats, Scan, Finding } from '@/lib/api';
 import {
     cn,
     formatDateTime,
@@ -31,6 +31,7 @@ import {
     RefreshCw,
     Github,
     ExternalLink,
+    Trash2,
 } from 'lucide-react';
 
 interface DomainScoreCardProps {
@@ -69,6 +70,7 @@ function DomainScoreCard({ title, icon: Icon, score, issues }: DomainScoreCardPr
 
 export default function ProjectPage() {
     const params = useParams();
+    const router = useRouter();
     const projectId = Number(params.id);
     const queryClient = useQueryClient();
     const [activeTab, setActiveTab] = useState<'security' | 'testing' | 'reliability' | 'observability' | 'performance' | 'infrastructure'>('security');
@@ -107,6 +109,33 @@ export default function ProjectPage() {
             alert(error.response?.data?.detail || 'Failed to start scan');
         }
     });
+
+    const deleteMutation = useMutation({
+        mutationFn: () => deleteProject(projectId),
+        onSuccess: async () => {
+            await queryClient.invalidateQueries({ queryKey: ['projects'] });
+            router.push('/dashboard');
+        },
+        onError: (error: any) => {
+            alert(error.response?.data?.detail || 'Failed to delete project');
+        }
+    });
+
+    const cancelScanMutation = useMutation({
+        mutationFn: () => cancelScan(latestScan?.id!),
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['project', projectId, 'scans'] });
+        },
+        onError: (error: any) => {
+            alert(error.response?.data?.detail || 'Failed to cancel scan');
+        }
+    });
+
+    const handleDelete = () => {
+        if (window.confirm('Are you sure you want to delete this project? This action cannot be undone.')) {
+            deleteMutation.mutate();
+        }
+    };
 
     if (isProjectLoading || isScansLoading) {
         return (
@@ -171,12 +200,20 @@ export default function ProjectPage() {
                             {latestScan?.status === 'scanning_sca' && 'Checking dependencies...'}
                             {latestScan?.status === 'scoring' && 'Calculating scores...'}
                         </p>
-                        <div className="w-full bg-slate-700 rounded-full h-2 overflow-hidden">
+                        <div className="w-full bg-slate-700 rounded-full h-2 overflow-hidden mb-6">
                             <div
                                 className="bg-purple-500 h-full transition-all duration-500 ease-out"
                                 style={{ width: `${latestScan?.progress}%` }}
                             ></div>
                         </div>
+
+                        <button
+                            onClick={() => cancelScanMutation.mutate()}
+                            disabled={cancelScanMutation.isPending}
+                            className="px-4 py-2 bg-red-500/10 text-red-500 text-sm font-medium rounded-lg hover:bg-red-500/20 transition-colors"
+                        >
+                            {cancelScanMutation.isPending ? 'Cancelling...' : 'Cancel Scan'}
+                        </button>
                     </div>
                 </div>
             )}
@@ -201,18 +238,28 @@ export default function ProjectPage() {
                         )}
                     </div>
                 </div>
-                <button
-                    onClick={() => scanMutation.mutate()}
-                    disabled={isScanning || scanMutation.isPending}
-                    className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50"
-                >
-                    {isScanning || scanMutation.isPending ? (
-                        <RefreshCw className="h-5 w-5 animate-spin" />
-                    ) : (
-                        <Play className="h-5 w-5" />
-                    )}
-                    {isScanning || scanMutation.isPending ? 'Scanning...' : 'Run Scan'}
-                </button>
+                <div className="flex items-center gap-3">
+                    <button
+                        onClick={handleDelete}
+                        disabled={deleteMutation.isPending || isScanning}
+                        className="flex items-center gap-2 px-4 py-2 bg-red-500/10 text-red-500 border border-red-500/20 rounded-lg hover:bg-red-500/20 transition-colors disabled:opacity-50"
+                    >
+                        <Trash2 className="h-5 w-5" />
+                        {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
+                    </button>
+                    <button
+                        onClick={() => scanMutation.mutate()}
+                        disabled={isScanning || scanMutation.isPending}
+                        className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50"
+                    >
+                        {isScanning || scanMutation.isPending ? (
+                            <RefreshCw className="h-5 w-5 animate-spin" />
+                        ) : (
+                            <Play className="h-5 w-5" />
+                        )}
+                        {isScanning || scanMutation.isPending ? 'Scanning...' : 'Run Scan'}
+                    </button>
+                </div>
             </div>
 
             {/* Main Score */}
@@ -256,15 +303,23 @@ export default function ProjectPage() {
                         <div>
                             <div className={cn(
                                 'inline-flex items-center gap-2 px-3 py-1 rounded-full text-sm font-medium mb-2',
-                                latestScan?.overall_score && latestScan.overall_score >= 85
-                                    ? 'bg-green-500/20 text-green-400'
-                                    : latestScan?.overall_score && latestScan.overall_score >= 60
-                                        ? 'bg-yellow-500/20 text-yellow-400'
-                                        : (latestScan?.overall_score !== null && latestScan?.overall_score !== undefined)
-                                            ? 'bg-red-500/20 text-red-400'
-                                            : 'bg-slate-700 text-gray-400'
+                                latestScan?.status === 'cancelled'
+                                    ? 'bg-slate-500/20 text-slate-400'
+                                    : latestScan?.status === 'failed'
+                                        ? 'bg-red-500/20 text-red-400'
+                                        : latestScan?.overall_score && latestScan.overall_score >= 85
+                                            ? 'bg-green-500/20 text-green-400'
+                                            : latestScan?.overall_score && latestScan.overall_score >= 60
+                                                ? 'bg-yellow-500/20 text-yellow-400'
+                                                : (latestScan?.overall_score !== null && latestScan?.overall_score !== undefined)
+                                                    ? 'bg-red-500/20 text-red-400'
+                                                    : 'bg-slate-700 text-gray-400'
                             )}>
-                                {latestScan?.overall_score && latestScan.overall_score >= 85 ? (
+                                {latestScan?.status === 'cancelled' ? (
+                                    <XCircle className="h-4 w-4" />
+                                ) : latestScan?.status === 'failed' ? (
+                                    <AlertTriangle className="h-4 w-4" />
+                                ) : latestScan?.overall_score && latestScan.overall_score >= 85 ? (
                                     <CheckCircle className="h-4 w-4" />
                                 ) : latestScan?.overall_score && latestScan.overall_score >= 60 ? (
                                     <AlertTriangle className="h-4 w-4" />
@@ -273,7 +328,11 @@ export default function ProjectPage() {
                                 ) : (
                                     <AlertTriangle className="h-4 w-4" />
                                 )}
-                                {scoreLabel}
+                                {latestScan?.status === 'cancelled'
+                                    ? 'Cancelled'
+                                    : latestScan?.status === 'failed'
+                                        ? 'Failed'
+                                        : scoreLabel}
                             </div>
                             <p className="text-gray-400">
                                 {project.total_scans} scans completed

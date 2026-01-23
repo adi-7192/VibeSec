@@ -60,7 +60,7 @@ export interface ProjectWithStats extends Project {
 export interface Scan {
     id: number;
     project_id: number;
-    status: 'pending' | 'cloning' | 'detecting' | 'scanning_sast' | 'scanning_sca' | 'scoring' | 'completed' | 'failed';
+    status: 'pending' | 'cloning' | 'detecting' | 'scanning_sast' | 'scanning_sca' | 'scoring' | 'completed' | 'failed' | 'cancelled';
     status_message: string | null;
     progress: number;
     commit_sha: string | null;
@@ -146,6 +146,11 @@ export const triggerScan = async (projectId: number): Promise<Scan> => {
 
 export const getScan = async (scanId: number): Promise<Scan> => {
     const response = await apiClient.get(`/scans/${scanId}`);
+    return response.data;
+};
+
+export const cancelScan = async (scanId: number): Promise<{ message: string }> => {
+    const response = await apiClient.post(`/scans/${scanId}/cancel`, {});
     return response.data;
 };
 

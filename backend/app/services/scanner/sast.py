@@ -6,6 +6,7 @@ Static Application Security Testing using Semgrep.
 
 import os
 import json
+import asyncio
 import subprocess
 import tempfile
 from pathlib import Path
@@ -29,6 +30,7 @@ class SASTFinding:
     code_snippet: str
     cwe_id: Optional[str] = None
     owasp_category: Optional[str] = None
+    layman_explanation: Optional[str] = None
 
 
 @dataclass
@@ -97,6 +99,37 @@ def _extract_owasp(metadata: dict) -> Optional[str]:
     return None
 
 
+
+FRIENDLY_TITLES = {
+    "wildcard-cors": "Overly Permissive CORS Policy",
+    "sql-injection": "SQL Injection Risk",
+    "formatted-sql": "SQL Injection Risk",
+    "security.injection.sql": "SQL Injection Risk",
+    # Add more mappings as needed
+}
+
+
+LAYMAN_EXPLANATIONS = {
+    # Specific Rule IDs
+    "wildcard-cors": "Your server is configured to accept requests from any website. This means a malicious website could trick your users' browsers into sending sensitive data (like login cookies) to your server, and then read the response.",
+    "sql-injection": "The code accepts user input and puts it directly into a database command. A hacker could use this to trick the database into revealing all its data or even deleting it.",
+    "formatted-sql": "The code accepts user input and puts it directly into a database command. A hacker could use this to trick the database into revealing all its data or even deleting it.",
+    "security.injection.sql": "The code accepts user input and puts it directly into a database command. A hacker could use this to trick the database into revealing all its data or even deleting it.",
+    "hardcoded-password": "A password is written directly in the code. Anyone who can see your code (including contractors or if it's open source) can see this password and use it to access your system.",
+    "hardcoded-token": "An API token or secret key is written directly in the code. If this code is shared or exposed, attackers can use this key to impersonate your application.",
+    
+    # Categories
+    "injection": "The application accepts untrusted data and executes it as a command. This is like signing a blank check; an attacker can fill it out to do whatever they want.",
+    "xss": "The application allows untrusted data to be displayed in a user's browser. An attacker can use this to steal user cookies, redirect them to phishing sites, or deface your website.",
+    "secrets": "Sensitive information like passwords or API keys was found in the code. This is like leaving your house key under the doormat.",
+    "auth": "There may be a flaw in how the application handles user logins or sessions. This could allow attackers to bypass login screens or impersonate other users.",
+    "validation": "The application doesn't properly check data coming from users. This can lead to various attacks where the application processes data it shouldn't.",
+    "crypto": "The application uses weak encryption or handles cryptographic keys insecurely. This might allow attackers to decrypt sensitive data.",
+    "config": "The application has a security misconfiguration. This is like leaving a window unlocked.",
+    "dependency": "The application uses a third-party library that has known security vulnerabilities.",
+}
+
+
 class SASTScanner:
     """SAST scanner using Semgrep."""
     
@@ -143,25 +176,32 @@ class SASTScanner:
             import time
             start_time = time.time()
             
-            process = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=600,  # 10 minute timeout
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
+            
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=600)
+                stdout_text = stdout.decode()
+                stderr_text = stderr.decode()
+            except asyncio.TimeoutError:
+                 process.kill()
+                 raise subprocess.TimeoutExpired(cmd, 600)
             
             result.duration_seconds = time.time() - start_time
             
             # Handle errors
             if process.returncode not in [0, 1]:  # 1 means findings found
-                if process.stderr:
-                    result.errors.append(process.stderr)
+                if stderr_text:
+                    result.errors.append(stderr_text)
                 return result
             
             # Parse results
-            if process.stdout:
+            if stdout_text:
                 try:
-                    output = json.loads(process.stdout)
+                    output = json.loads(stdout_text)
                     result = self._parse_semgrep_output(output, result)
                 except json.JSONDecodeError as e:
                     result.errors.append(f"Failed to parse Semgrep output: {e}")
@@ -187,6 +227,11 @@ class SASTScanner:
         for finding in results:
             try:
                 path = finding.get("path", "")
+                
+                # Convert absolute path to relative path if possible
+                if os.path.isabs(path) and path.startswith(self.project_path):
+                    path = os.path.relpath(path, self.project_path)
+                
                 paths.add(path)
                 
                 # Get code snippet
@@ -213,6 +258,7 @@ class SASTScanner:
                     code_snippet=lines,
                     cwe_id=_extract_cwe(metadata),
                     owasp_category=_extract_owasp(metadata),
+                    layman_explanation=self._generate_layman_explanation(rule_id, message, _categorize_rule(rule_id, message)),
                 )
                 
                 result.findings.append(sast_finding)
@@ -233,6 +279,16 @@ class SASTScanner:
     
     def _generate_title(self, rule_id: str, message: str) -> str:
         """Generate a concise title for a finding."""
+        # Check friendly titles map first (exact match)
+        if rule_id in FRIENDLY_TITLES:
+            return FRIENDLY_TITLES[rule_id]
+            
+        # Check for substring matches in friendly titles
+        # e.g., if we have a key "wildcard-cors", match any rule_id containing it
+        for key, title in FRIENDLY_TITLES.items():
+            if key in rule_id:
+                return title
+            
         # Extract meaningful part from rule_id
         # e.g., "python.django.sql.sql-injection" -> "SQL Injection"
         parts = rule_id.split(".")
@@ -246,6 +302,24 @@ class SASTScanner:
         if len(first_line) > 80:
             return first_line[:77] + "..."
         return first_line
+
+    def _generate_layman_explanation(self, rule_id: str, message: str, category: FindingCategory) -> str:
+        """Generate a user-friendly explanation for a finding."""
+        # 1. Check for specific rule ID match
+        if rule_id in LAYMAN_EXPLANATIONS:
+            return LAYMAN_EXPLANATIONS[rule_id]
+        
+        # 2. Check for partial rule ID match
+        for key, explanation in LAYMAN_EXPLANATIONS.items():
+            if key in rule_id and len(key) > 4: # Avoid too short matches
+                return explanation
+
+        # 3. Fallback to category-based explanation
+        cat_key = category.value
+        if cat_key in LAYMAN_EXPLANATIONS:
+            return LAYMAN_EXPLANATIONS[cat_key]
+
+        return "This finding poses a potential security risk. It should be reviewed to ensure that user data and system integrity are protected."
 
 
 async def run_sast_scan(project_path: str, languages: Optional[list[str]] = None) -> SASTResult:

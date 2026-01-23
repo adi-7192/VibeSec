@@ -29,6 +29,7 @@ class SCAFinding:
     fixed_version: Optional[str] = None
     cve_id: Optional[str] = None
     cwe_id: Optional[str] = None
+    layman_explanation: Optional[str] = None
     references: list[str] = field(default_factory=list)
 
 
@@ -286,6 +287,7 @@ class SCAScanner:
                 fixed_version=fixed_version,
                 cve_id=cve_id,
                 references=references[:5],  # Limit references
+                layman_explanation=f"This package version contains a known vulnerability (ID: {vuln.get('id')}). Upgrading to version {fixed_version if fixed_version else 'a newer version'} is recommended to fix this issue." if fixed_version else f"This package version contains a known vulnerability (ID: {vuln.get('id')}). Please check for updates or alternative packages."
             )
             
             findings.append(finding)

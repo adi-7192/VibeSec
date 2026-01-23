@@ -18,6 +18,8 @@ Security and testing platform for AI-generated web applications. Get production-
     -   **SAST**: Static Application Security Testing using Semgrep.
     -   **SCA**: Software Composition Analysis for dependency vulnerabilities.
     -   **Stack Detection**: Automatic identification of Next.js, Express, FastAPI, and Django projects.
+    -   **Scan Cancellation**: Cancel running scans at any stage with proper cleanup.
+    -   **Layman Explanations**: User-friendly security explanations for non-technical users.
 
 -   **Interactive Dashboard**: Real-time scan progress, score visualization, and detailed finding reports.
 
@@ -87,7 +89,10 @@ Visit [http://localhost:3000](http://localhost:3000)
 | POST | `/api/v1/projects/github` | Import from GitHub |
 | POST | `/api/v1/projects/zip` | Upload ZIP project |
 | POST | `/api/v1/projects/{id}/scans` | Trigger analysis |
+| POST | `/api/v1/scans/{id}/cancel` | Cancel running scan |
 | GET | `/api/v1/projects/{id}/scans` | Get scan history |
+
+## Recent Updates (v0.2.0 - Milestone)
 
 ## License
 

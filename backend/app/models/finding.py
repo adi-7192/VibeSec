@@ -60,6 +60,9 @@ class Finding(Base):
         default=FindingCategory.OTHER
     )
     
+    # User-friendly explanation
+    layman_explanation: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    
     # Location (for SAST)
     file_path: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     line_start: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)

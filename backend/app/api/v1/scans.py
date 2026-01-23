@@ -115,6 +115,42 @@ async def trigger_scan(
     return ScanResponse.model_validate(scan)
 
 
+@router.post("/scans/{scan_id}/cancel", status_code=status.HTTP_200_OK)
+async def cancel_scan(
+    scan_id: int,
+    user: CurrentUser,
+    db: DBSession,
+):
+    """Cancel a running scan."""
+    # Verify scan ownership
+    scan_result = await db.execute(
+        select(Scan)
+        .join(Project)
+        .where(Scan.id == scan_id, Project.user_id == user.id)
+    )
+    scan = scan_result.scalar_one_or_none()
+    
+    if not scan:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Scan not found")
+    
+    # Check if cancellable
+    terminal_statuses = [ScanStatus.COMPLETED, ScanStatus.FAILED, ScanStatus.CANCELLED]
+    if scan.status in terminal_statuses:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, 
+            detail="Scan cannot be cancelled in its current state"
+        )
+    
+    # Mark as cancelled
+    scan.status = ScanStatus.CANCELLED
+    scan.status_message = "Cancelled by user"
+    scan.completed_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(scan)
+    
+    return {"message": "Scan cancelled"}
+
+
 @router.get("/scans/{scan_id}", response_model=ScanResponse)
 async def get_scan(
     scan_id: int,
@@ -217,6 +253,7 @@ async def get_findings(
                 "is_ignored": f.is_ignored,
                 "has_fix_suggestion": f.fix_suggestion is not None,
                 "has_test_suggestion": f.test_suggestion is not None,
+                "layman_explanation": f.layman_explanation,
                 "created_at": f.created_at.isoformat(),
             }
             for f in findings
@@ -259,12 +296,27 @@ async def execute_scan(scan_id: int, project_id: int, user_id: int):
             
             logger.info(f"Starting scan {scan_id} for project {project_id} ({project.name})")
             
+            # Helper function to check cancellation status
+            async def is_cancelled() -> bool:
+                """Check if scan has been cancelled by querying DB directly."""
+                result = await db.execute(
+                    select(Scan.status).where(Scan.id == scan_id)
+                )
+                current_status = result.scalar_one_or_none()
+                return current_status == ScanStatus.CANCELLED
+            
             # Update status: Cloning
+            if await is_cancelled():
+                logger.info(f"Scan {scan_id} cancelled")
+                return
+
             scan.status = ScanStatus.CLONING
             scan.started_at = datetime.utcnow()
             scan.progress = 10
             await db.commit()
             
+
+
             # Clone/download repository
             temp_dir = tempfile.mkdtemp(prefix="vibesec_")
             project_path = temp_dir
@@ -292,9 +344,17 @@ async def execute_scan(scan_id: int, project_id: int, user_id: int):
                     await github.close()
             
             # Update status: Detecting
+            if await is_cancelled():
+                logger.info(f"Scan {scan_id} cancelled")
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return
+
             scan.status = ScanStatus.DETECTING
             scan.progress = 20
             await db.commit()
+
+
             
             # Detect stack
             stack_result = await detect_stack(project_path)
@@ -310,25 +370,49 @@ async def execute_scan(scan_id: int, project_id: int, user_id: int):
                 languages = ["python"]
             
             # Update status: SAST
+            if await is_cancelled():
+                logger.info(f"Scan {scan_id} cancelled")
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return
+
             scan.status = ScanStatus.SCANNING_SAST
             scan.progress = 40
             await db.commit()
+
+
             
             # Run SAST
             sast_result = await run_sast_scan(project_path, languages)
             
             # Update status: SCA
+            if await is_cancelled():
+                logger.info(f"Scan {scan_id} cancelled")
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return
+
             scan.status = ScanStatus.SCANNING_SCA
             scan.progress = 60
             await db.commit()
+
+
             
             # Run SCA
             sca_result = await run_sca_scan(project_path)
             
             # Update status: Scoring
+            if await is_cancelled():
+                logger.info(f"Scan {scan_id} cancelled")
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return
+
             scan.status = ScanStatus.SCORING
             scan.progress = 80
             await db.commit()
+
+
             
             # Store findings
             # ... (rest of storage logic unchanged)
@@ -347,6 +431,7 @@ async def execute_scan(scan_id: int, project_id: int, user_id: int):
                     cwe_id=sast_finding.cwe_id,
                     owasp_category=sast_finding.owasp_category,
                     rule_id=sast_finding.rule_id,
+                    layman_explanation=sast_finding.layman_explanation,
                 )
                 db.add(finding)
             
@@ -362,6 +447,7 @@ async def execute_scan(scan_id: int, project_id: int, user_id: int):
                     package_version=sca_finding.package_version,
                     fixed_version=sca_finding.fixed_version,
                     cve_id=sca_finding.cve_id,
+                    layman_explanation=sca_finding.layman_explanation,
                 )
                 db.add(finding)
             

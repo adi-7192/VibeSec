@@ -27,6 +27,7 @@ class ScanStatus(str, enum.Enum):
     SCORING = "scoring"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class Scan(Base):

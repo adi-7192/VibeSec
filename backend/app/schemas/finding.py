@@ -43,6 +43,9 @@ class FindingResponse(FindingBase):
     # Status
     is_fixed: bool = False
     is_ignored: bool = False
+
+    # User-friendly explanation
+    layman_explanation: Optional[str] = None
     
     # LLM-generated content availability
     has_fix_suggestion: bool = False
